@@ -173,7 +173,7 @@
     const tag = (e.target.tagName || "").toLowerCase();
     if ((tag === "input" || tag === "select" || tag === "textarea") && e.key !== "Escape") return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if ($("#settings").open) return;
+    if ($("#settings").open || $("#dict").open) return;
     keyHandler(e);
   });
 
@@ -255,6 +255,127 @@
     </div>`));
   };
 
+  /* ================= Словарь: форма → слово ================= */
+  const formKey = (w) => GR.stripAll(String(w).toLowerCase()).replace(/ς/g, "σ");
+  const ARTICLES = {
+    ο: "артикль м.р.", η: "артикль ж.р. / мн.ч.", το: "артикль ср.р.; его, это (местоим.)", οι: "артикль мн.ч. м./ж.р.", τα: "артикль мн.ч. ср.р.; их (местоим.)",
+    του: "артикль, род. п. м./ср.р.; его, ему", της: "артикль, род. п. ж.р.; её, ей", των: "артикль, род. п. мн.ч.",
+    τον: "артикль, вин. п. м.р.; его", την: "артикль, вин. п. ж.р.; её", τη: "артикль, вин. п. ж.р.", τους: "артикль, вин. п. мн.ч. м.р.; их, им", τις: "артикль, вин. п. мн.ч. ж.р.; их",
+    στο: "σε + το: в, на", στη: "σε + τη: в, на", στην: "σε + την: в, на", στον: "σε + τον: в, на", στα: "σε + τα: в, на", στους: "σε + τους: в, на", στις: "σε + τις: в, на", στης: "σε + της",
+    ένας: "один; неопр. артикль м.р.", μια: "одна; неопр. артикль ж.р.", μία: "одна", έναν: "один (вин. п.)", ενός: "одного (род. п.)", μιας: "одной (род. п.)",
+  };
+  const NEND = { "ος": ["ος", "ου", "ο", "ε", "οι", "ων", "ους", "η"], "ας": ["ας", "α", "ες", "ων", "αδες", "αδων"], "ης": ["ης", "η", "ες", "ων", "ηδες", "εις", "εων"],
+    "μα": ["μα", "ματος", "ματα", "ματων"], "ια": ["ια", "ιας", "ιες", "ιων"], "α": ["α", "ας", "ες", "ων", "ατα", "ατος", "ατων"], "η": ["η", "ης", "ες", "εις", "ων", "εων"],
+    "ο": ["ο", "ου", "α", "ων"], "ι": ["ι", "ιου", "ια", "ιων"], "ους": ["ους", "ου", "ουδες", "ουδων"], "ου": ["ου", "ουδες", "ουδων"], "ες": ["ες", "ων"] };
+  const NORDER = ["μα", "ους", "ος", "ας", "ης", "ια", "α", "η", "ο", "ι", "ου", "ες"];
+  const ADJ_END = ["ος", "ου", "ο", "ε", "οι", "ων", "ους", "η", "ης", "ες", "α", "ας", "υς", "ια", "ιας", "ιες", "ιων", "υ", "ιου", "ιοι", "ιους", "ους", "ης", "εις", "ουσα", "ον", "οντα"];
+  let FORM_INDEX = null;
+  function formIndex() {
+    if (FORM_INDEX) return FORM_INDEX;
+    const m = new Map();
+    const add = (f, it) => { const k = formKey(f); if (!k) return; let a = m.get(k); if (!a) m.set(k, (a = [])); if (!a.includes(it)) a.push(it); };
+    VERB_ITEMS.forEach((it) => {
+      const v = it.verb;
+      add(v.v, it);
+      GR.TENSES.forEach((t) => {
+        const c = GR.conjugate(v, t.id); if (!c) return;
+        c.forms.forEach((f) => add(f.split(" ").pop(), it));
+        c.alts.flat().forEach((f) => add(f, it));
+      });
+      const d = GR.conjugate(v, "fut");
+      if (d && !v.futF) { const st = d.forms[0].slice(0, -1); add(st + "ε", it); add(st + "τε", it); } // повелительное
+    });
+    window.VOCAB.forEach((it) => {
+      if (it.kind === "nouns") {
+        it.gr.split("/").forEach((alt) => {
+          const ws = alt.split(" ").slice(1);
+          if (ws.length !== 1) return;
+          const w = formKey(ws[0]); add(w, it);
+          const e = NORDER.find((x) => w.endsWith(formKey(x)));
+          if (e) NEND[e].forEach((x) => add(w.slice(0, -formKey(e).length) + formKey(x), it));
+        });
+      } else if (it.kind === "adjectives") {
+        const toks = it.gr.split(" ");
+        const w = formKey(toks[0]); add(w, it);
+        const st = w.replace(/(οσ|υσ|ησ|ων)$/, "");
+        if (st !== w) ADJ_END.forEach((x) => add(st + formKey(x), it));
+        toks.slice(1).forEach((tk) => {
+          if (tk.startsWith("-")) { add(st + formKey(tk.slice(1)), it); return; }
+          const k = formKey(tk); add(k, it);
+          const st2 = k.replace(/[αηοιυ]$/, "");
+          if (st2 !== k) ADJ_END.forEach((x) => add(st2 + formKey(x), it));
+        });
+      } else if (it.kind === "words") {
+        it.gr.split("/").forEach((alt) => { if (!/\s/.test(alt.trim())) add(alt.trim(), it); });
+      }
+    });
+    return (FORM_INDEX = m);
+  }
+
+  // для отладки в консоли: lookupForm("πήγαμε")
+  window.lookupForm = (w) => (formIndex().get(formKey(w)) || []).map((i) => i.gr);
+
+  const dict = document.createElement("dialog");
+  dict.id = "dict";
+  document.body.appendChild(dict);
+  dict.addEventListener("click", (e) => {
+    if (e.target === dict) { dict.close(); return; }
+    const say = e.target.closest("[data-say]"); if (say) speak(say.dataset.say);
+    const go = e.target.closest("[data-dict]"); if (go) openDict(go.dataset.dict);
+    if (e.target.closest("[data-close]")) dict.close();
+  });
+
+  function verbEntryHTML(it, mk) {
+    const v = it.verb;
+    return `<div class="dict-entry">
+      <div class="row"><h2 class="gr" style="margin:0">${esc(v.v)}</h2><button class="speak sm" data-say="${esc(v.v)}">🔊</button>
+        ${v.ex ? `<span class="badge ex">ΚΕΓ</span>` : ""}<span class="badge ${v.lvl}">${v.lvl}</span></div>
+      <p style="margin:4px 0 0">${esc(v.ru)} · <span class="muted">${GR.TYPE_NAMES[v.p]}</span></p>
+      ${v.note ? `<p class="muted" style="margin:4px 0 0;font-size:14px">${esc(v.note)}</p>` : ""}
+      <div class="tables" style="margin-top:12px">${GR.TENSES.map((t) => `<div class="card" style="padding:14px"><h3>${esc(t.ru)} ${t.lvl === "B1" ? `<span class="badge B1">B1</span>` : ""}</h3>
+        <div class="grn gr">${esc(t.gr)}</div>${conjTable(v, t.id, -1, mk)}</div>`).join("")}</div></div>`;
+  }
+  function wordEntryHTML(it, token) {
+    const base = it.kind === "nouns" ? it.word : it.word || it.gr;
+    const isForm = token && formKey(token) !== formKey(base) && !it.gr.split("/").some((a) => formKey(a.split(" ").pop()) === formKey(token));
+    const kindName = { nouns: "существительное", adjectives: "прилагательное", words: "служебное слово / наречие" }[it.kind] || "";
+    return `<div class="dict-entry card" style="padding:16px">
+      <div class="row"><span class="gr" style="font-size:1.5rem">${grHTML(it)}</span><button class="speak sm" data-say="${esc(it.gr)}">🔊</button>
+        ${it.ex ? `<span class="badge ex">ΚΕΓ</span>` : ""}<span class="badge ${it.lvl}">${it.lvl}</span></div>
+      <p style="margin:6px 0 0;font-size:1.1rem">${esc(it.ru)}</p>
+      <p class="muted" style="margin:4px 0 0;font-size:14px">${kindName}${it.kind === "nouns" ? " · " + (it.gender ? GENDER_NAME[it.gender] : "множественное число") : ""} · ${esc(it.topic)}
+        ${isForm ? `<br>«${esc(token)}» — форма этого слова` : ""}</p></div>`;
+  }
+  function openDict(token, preferVerb) {
+    const clean = String(token).replace(/^[«"(]+|[.,!;:?…»");]+$/g, "");
+    const mk = formKey(clean);
+    let hits = formIndex().get(mk) || [];
+    if (preferVerb) hits = [preferVerb].concat(hits.filter((h) => h !== preferVerb));
+    const art = ARTICLES[mk] || ARTICLES[clean.toLowerCase()];
+    const verbs = hits.filter((h) => h.kind === "verbs"), other = hits.filter((h) => h.kind !== "verbs");
+    let body = "";
+    if (art) body += `<div class="card" style="padding:14px"><b class="gr">${esc(clean)}</b> — ${esc(art)}</div>`;
+    body += other.map((it) => wordEntryHTML(it, clean)).join("");
+    body += verbs.map((it) => verbEntryHTML(it, mk)).join("");
+    if (!body) body = `<div class="card empty" style="padding:24px">Слова «<span class="gr">${esc(clean)}</span>» пока нет в словаре сайта.<br>
+      <button class="speak" data-say="${esc(clean)}">🔊</button></div>`;
+    dict.innerHTML = `<div class="dict-head"><span class="muted">Словарь</span><b class="gr" style="font-size:1.2rem">${esc(clean)}</b>
+      <span class="spacer"></span><button class="icon-btn" data-close aria-label="Закрыть">✕</button></div>
+      <div class="stack">${body}</div>`;
+    if (!dict.open) dict.showModal();
+    dict.scrollTop = 0;
+  }
+
+  /** Греческий текст, где каждое слово открывает словарь */
+  function clickableGreek(text) {
+    return String(text).split(/(\s+|\/)/).map((tok) => {
+      if (!tok || /^\s+$/.test(tok) || tok === "/") return tok === "/" ? " / " : tok;
+      const m = tok.match(/^([«"(]*)(.*?)([.,!;:?…»");]*)$/);
+      if (!m || !m[2]) return esc(tok);
+      return `${esc(m[1])}<button class="w" data-word="${esc(m[2])}">${esc(m[2])}</button>${esc(m[3])}`;
+    }).join("");
+  }
+
   /* ================= Карточки ================= */
   views.cards = (root) => {
     const bar = h(`<div class="toolbar">
@@ -322,6 +443,7 @@
       if (it.kind === "verbs") {
         const pp = GR.principalParts(it.verb);
         return `<div class="parts">${pp.map((x) => `<span>${esc(x)}</span>`).join("")}</div>
+          <button class="btn small" data-verbdict style="margin-top:10px">📖 Все времена и лица</button>
           <div class="sub" style="font-size:13px">${GR.TYPE_NAMES[it.verb.p]}${it.verb.note ? " · " + esc(it.verb.note) : ""}</div>`;
       }
       if (it.kind === "nouns") return `<div class="sub ${gcls(it)}" style="font-size:14px">${it.gender ? GENDER_NAME[it.gender] : "множественное число"}</div>`;
@@ -332,13 +454,16 @@
       if (idx >= queue.length) return summary();
       flipped = false;
       const { it, dir } = queue[idx];
-      const grSide = `<div class="main gr">${grHTML(it)}</div>`;
+      const multi = (it.kind === "phrases" || it.kind === "words") && /\s/.test(it.gr.trim());
+      const grSide = multi
+        ? `<div class="main gr phrase">${clickableGreek(it.gr)}</div><div class="sub" style="font-size:13px">нажмите на слово — откроется словарь</div>`
+        : `<div class="main gr">${grHTML(it)}</div>`;
       const ruSide = `<div class="main">${esc(it.ru)}</div>`;
       const meta = `<div class="meta"><span>${esc(it.topic)}</span><span>${it.ex ? `<span class="badge ex" title="Встречается в образцах экзаменов ΚΕΓ (${it.ex})">ΚΕΓ</span> ` : ""}<span class="badge ${it.lvl}">${it.lvl}</span></span></div>`;
       const speakBtn = `<button class="speak" data-say title="Произнести (S)">🔊</button>`;
       const front = dir === "gr-ru" ? grSide + speakBtn : ruSide + `<div class="sub">как это по-гречески?</div>`;
       const back = dir === "gr-ru"
-        ? ruSide + `<div class="sub gr">${esc(it.gr.replace(/\//g, " / "))}</div>` + extras(it)
+        ? ruSide + `<div class="sub gr">${multi ? clickableGreek(it.gr) : esc(it.gr.replace(/\//g, " / "))}</div>` + extras(it)
         : grSide + extras(it) + speakBtn + `<div class="sub">${esc(it.ru)}</div>`;
       area.innerHTML = "";
       const pct = Math.round((idx / queue.length) * 100);
@@ -354,6 +479,9 @@
         </div></div>`));
       const card = $(".flash", area);
       card.addEventListener("click", (e) => {
+        const wbtn = e.target.closest("[data-word]");
+        if (wbtn) { e.stopPropagation(); openDict(wbtn.dataset.word); return; }
+        if (e.target.closest("[data-verbdict]")) { e.stopPropagation(); openDict(it.verb.v, it); return; }
         if (e.target.closest("[data-say]")) { e.stopPropagation(); speak(it.gr); return; }
         flip();
       });
@@ -434,11 +562,12 @@
     }
     return null;
   }
-  function conjTable(v, tid, hl = -1) {
+  function conjTable(v, tid, hl = -1, matchKey = "") {
     const c = GR.conjugate(v, tid);
     if (!c) return `<p class="muted">—</p>`;
     const t = GR.tenseInfo(tid);
-    return `<table class="conj">${c.forms.map((f, i) => `<tr class="${i === hl ? "hl" : ""}"><td class="p">${GR.PRONOUNS[i]}</td>
+    const hit = (i) => matchKey && [c.forms[i]].concat(c.alts[i]).some((f) => formKey(f.split(" ").pop()) === matchKey);
+    return `<table class="conj">${c.forms.map((f, i) => `<tr class="${i === hl || hit(i) ? "hl" : ""}"><td class="p">${GR.PRONOUNS[i]}</td>
       <td data-say="${esc((t.prefix ? t.prefix + " " : "") + f)}" style="cursor:pointer">${t.prefix ? `<span class="muted">${t.prefix}</span> ` : ""}${esc(f)}${c.alts[i].length ? ` <span class="muted" style="font-size:.85em">(${c.alts[i].map(esc).join(", ")})</span>` : ""}</td></tr>`).join("")}</table>`;
   }
   function bindSay(el) {

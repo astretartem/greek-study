@@ -255,3 +255,12 @@ dialog .actions { display: flex; justify-content: flex-end; margin-top: 16px; }
 }
 .art-pl { color: var(--muted); }
 .badge.ex { background: var(--blue-soft); color: var(--blue); }
+
+/* ---------- Словарь ---------- */
+#dict { max-width: 760px; width: calc(100% - 24px); max-height: 88vh; overflow: auto; padding: 0 18px 18px; }
+.dict-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 14px 0 12px; background: var(--surface); border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.dict-entry h3 { font-size: 1rem; margin-bottom: 2px; }
+.face .main.phrase { font-size: 2rem; line-height: 1.5; }
+button.w { font: inherit; color: inherit; background: none; border: 0; padding: 0 2px; margin: 0 -2px; border-radius: 6px; cursor: pointer; border-bottom: 2px dotted color-mix(in srgb, var(--blue) 55%, transparent); }
+button.w:hover, button.w:focus-visible { background: var(--blue-soft); color: var(--blue); outline: none; }
+@media (max-width: 720px) { .face .main.phrase { font-size: 1.5rem; } #dict { padding: 0 12px 12px; } }
