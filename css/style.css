@@ -253,3 +253,5 @@ dialog .actions { display: flex; justify-content: flex-end; margin-top: 16px; }
   .answer-row { flex-wrap: wrap; }
   .pron { min-width: 0; justify-content: center; flex-basis: 100%; }
 }
+.art-pl { color: var(--muted); }
+.badge.ex { background: var(--blue-soft); color: var(--blue); }

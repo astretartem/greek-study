@@ -22,7 +22,8 @@
   ];
   const TYPE_NAMES = {
     A: "Группа A (-ω)", B1: "Группа B1 (-άω)", B2: "Группа B2 (-ώ)",
-    M: "Средний залог (-ομαι)", MA: "Средний залог (-άμαι)", X: "Неправильный",
+    M: "Средний залог (-ομαι)", MA: "Средний залог (-άμαι)", MO: "Средний залог (-ούμαι)",
+    MIE: "Средний залог (-ιέμαι)", X: "Неправильный",
   };
 
   const map = (s, ends) => ends.map((e) => s + e);
@@ -34,6 +35,28 @@
     const pl = pair[1] || sg + "με";
     const b = sg.slice(0, -1);
     return [b + "α", b + "ες", b + "ε", pl, pl.slice(0, -3) + "ατε", b + "αν"];
+  }
+
+  /** Ставит ударение на третий слог от конца; если слогов меньше — добавляет приращение έ- */
+  function placeStress(word) {
+    const us = units(stripTonos(word));
+    const vi = us.map((u, i) => (isVowel(u[0]) ? i : -1)).filter((i) => i >= 0);
+    if (vi.length < 3) return "έ" + us.join("");
+    const k = vi[vi.length - 3];
+    us[k] = accentUnit(us[k], true);
+    return us.join("");
+  }
+
+  /** Тип спряжения по форме словаря */
+  function inferType(v) {
+    const w = v.v;
+    if (w.endsWith("ιέμαι")) return "MIE";
+    if (w.endsWith("ούμαι")) return "MO";
+    if (w.endsWith("άμαι")) return "MA";
+    if (w.endsWith("ομαι")) return "M";
+    if (w.endsWith("άω")) return "B1";
+    if (w.endsWith("ώ")) return "B2";
+    return "A";
   }
 
   function present(v) {
@@ -50,6 +73,8 @@
         const s = v.v.slice(0, -4);
         return map(s, ["άμαι", "άσαι", "άται", "όμαστε", "άστε", "ούνται"]);
       }
+      case "MO": return map(v.v.slice(0, -5), ["ούμαι", "είσαι", "είται", "ούμαστε", "είστε", "ούνται"]);
+      case "MIE": return map(v.v.slice(0, -5), ["ιέμαι", "ιέσαι", "ιέται", "ιόμαστε", "ιέστε", "ιούνται"]);
     }
     return [];
   }
@@ -72,12 +97,25 @@
       const s = v.v.slice(0, -4);
       return map(s, ["όμουν", "όσουν", "όταν", "όμασταν", "όσασταν", "ούνταν"]);
     }
+    if (v.p === "MO") return map(v.v.slice(0, -5), ["ούμουν", "ούσουν", "ούνταν", "ούμασταν", "ούσασταν", "ούνταν"]);
+    if (v.p === "MIE") return map(v.v.slice(0, -5), ["ιόμουν", "ιόσουν", "ιόταν", "ιόμασταν", "ιόσασταν", "ιόνταν"]);
+    if (v.p === "B1") return derivePast([v.v.slice(0, -2) + "ούσα"]);
+    if (v.p === "B2") return derivePast([v.v.slice(0, -1) + "ούσα"]);
+    if (v.p === "A") {
+      const s = v.v.slice(0, -1);
+      return derivePast([placeStress(s + "α"), placeStress(s + "αμε")]);
+    }
     return null;
   }
 
   function aorist(v) {
     if (v.aorF) return v.aorF.slice();
     if (v.aor) return derivePast(v.aor);
+    if (v.fut && !v.futF) {
+      const s = stripTonos(v.fut.slice(0, -1));
+      if (v.fut.endsWith("ώ")) return derivePast([placeStress(s + "ηκα"), placeStress(s + "ηκαμε")]);
+      return derivePast([placeStress(s + "α"), placeStress(s + "αμε")]);
+    }
     return null;
   }
 
@@ -294,7 +332,7 @@
   }
 
   window.GR = {
-    PRONOUNS, PERSONS_RU, TENSES, TYPE_NAMES, conjugate, tenseInfo, principalParts,
+    PRONOUNS, PERSONS_RU, TENSES, TYPE_NAMES, conjugate, inferType, placeStress, tenseInfo, principalParts,
     normalize, check, diffHTML, stripAll, stripTonos, units, misspellings, accentTask,
     latinToGreek, applyDead, addTonos, hasTonos, isVowel,
   };

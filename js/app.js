@@ -18,7 +18,7 @@
   };
 
   const S = Object.assign({ level: "A2", strict: true, latin: true, autoSpeak: false, rate: 0.9, newPerSession: 20 }, store.get("gr.settings", {}));
-  const UI = Object.assign({ deck: "all", topic: "", dir: "gr-ru", mode: "srs", spellTab: "dictation", spellDeck: "all", verbTab: "trainer", tenses: null, group: "all" }, store.get("gr.ui", {}));
+  const UI = Object.assign({ deck: "all", topic: "", dir: "gr-ru", mode: "srs", spellTab: "dictation", spellDeck: "all", verbTab: "trainer", tenses: null, group: "all", examOnly: false }, store.get("gr.ui", {}));
   let P = store.get("gr.progress", {});
   let LOG = store.get("gr.log", {});
   const saveS = () => store.set("gr.settings", S);
@@ -37,7 +37,11 @@
   const lvlOk = (l) => S.level === "B1" || l !== "B1";
 
   /* ================= Данные ================= */
-  const VERB_ITEMS = window.VERBS.map((v) => ({ id: "verbs:" + v.v, kind: "verbs", topic: "Глаголы", gr: v.v, ru: v.ru, lvl: v.lvl, word: v.v, verb: v }));
+  // результаты сверки с образцами экзаменов ΚΕΓ
+  const EXAM = window.EXAM_DATA || {};
+  window.VERBS.forEach((v) => { const e = EXAM["verbs:" + v.v]; if (e) { v.ex = e.ex; if (e.lvl) v.lvl = e.lvl; } });
+  window.VOCAB.forEach((it) => { const e = EXAM[it.id]; if (e) { it.ex = e.ex; it.exN = e.n; if (e.lvl) it.lvl = e.lvl; } });
+  const VERB_ITEMS = window.VERBS.map((v) => ({ id: "verbs:" + v.v, kind: "verbs", topic: "Глаголы", gr: v.v, ru: v.ru, lvl: v.lvl, word: v.v, verb: v, ex: v.ex }));
   const ALL = VERB_ITEMS.concat(window.VOCAB);
   const DECKS = [
     { id: "all", name: "Все слова" },
@@ -47,17 +51,19 @@
     { id: "words", name: "Наречия, связки, числа" },
     { id: "phrases", name: "Фразы" },
   ];
-  const items = (deck = "all", topic = "") => ALL.filter((i) => lvlOk(i.lvl) && (deck === "all" || i.kind === deck) && (!topic || i.topic === topic));
+  const items = (deck = "all", topic = "", examOnly = false) => ALL.filter((i) => lvlOk(i.lvl) && (deck === "all" || i.kind === deck) && (!topic || i.topic === topic) && (!examOnly || i.ex));
   const REAL_WORDS = new Set(ALL.flatMap((i) => (i.kind === "nouns" ? i.gr.split("/").map((x) => x.split(" ").slice(1).join(" ")) : i.gr.split("/").map((x) => x.split(" ")[0]))));
   const GENDER_NAME = { м: "мужской род", ж: "женский род", ср: "средний род" };
   const GENDER_CLS = { м: "m", ж: "f", ср: "n" };
 
+  const gcls = (it) => (it.gender ? "art-" + GENDER_CLS[it.gender] : "art-pl");
   function grHTML(it) {
-    if (it.kind !== "nouns") return esc(it.gr).replace(/\//g, " / ");
+    const hint = it.hint ? ` <span class="muted" style="font-size:.6em">(${esc(it.hint)})</span>` : "";
+    if (it.kind !== "nouns") return esc(it.gr).replace(/\//g, " / ") + hint;
     return it.gr.split("/").map((alt) => {
       const sp = alt.indexOf(" ");
-      return `<span class="art-${GENDER_CLS[it.gender]}">${esc(alt.slice(0, sp))}</span> ${esc(alt.slice(sp + 1))}`;
-    }).join(" / ");
+      return `<span class="${gcls(it)}">${esc(alt.slice(0, sp))}</span> ${esc(alt.slice(sp + 1))}`;
+    }).join(" / ") + hint;
   }
 
   /* ================= Озвучка ================= */
@@ -258,6 +264,7 @@
         <option value="gr-ru">Греческий → русский</option>
         <option value="ru-gr">Русский → греческий</option>
         <option value="mix">Вперемешку</option></select></label>
+      <label class="chip ${UI.examOnly ? "on" : ""}" title="Слова, которые встречаются в образцах экзаменов ΚΕΓ"><input type="checkbox" id="exOnly" ${UI.examOnly ? "checked" : ""}>Только из экзаменов</label>
       <label>Режим <select id="mode">
         <option value="srs">Интервальное повторение</option>
         <option value="all">Все подряд</option></select></label>
@@ -278,6 +285,7 @@
     fillTopics();
     bar.addEventListener("change", (e) => {
       UI.deck = deckSel.value; UI.dir = $("#dir", bar).value; UI.mode = $("#mode", bar).value;
+      UI.examOnly = $("#exOnly", bar).checked; $("#exOnly", bar).parentElement.classList.toggle("on", UI.examOnly);
       if (e.target === deckSel) UI.topic = ""; else UI.topic = topicSel.value;
       saveUI(); fillTopics(); start();
     });
@@ -285,7 +293,7 @@
     let queue = [], idx = 0, flipped = false, tally = [0, 0, 0];
 
     function start(forceAll) {
-      const pool = items(UI.deck, UI.topic);
+      const pool = items(UI.deck, UI.topic, UI.examOnly);
       tally = [0, 0, 0]; idx = 0;
       if (UI.mode === "all" || forceAll) queue = shuffle(pool);
       else {
@@ -316,7 +324,7 @@
         return `<div class="parts">${pp.map((x) => `<span>${esc(x)}</span>`).join("")}</div>
           <div class="sub" style="font-size:13px">${GR.TYPE_NAMES[it.verb.p]}${it.verb.note ? " · " + esc(it.verb.note) : ""}</div>`;
       }
-      if (it.kind === "nouns") return `<div class="sub art-${GENDER_CLS[it.gender]}" style="font-size:14px">${GENDER_NAME[it.gender]}</div>`;
+      if (it.kind === "nouns") return `<div class="sub ${gcls(it)}" style="font-size:14px">${it.gender ? GENDER_NAME[it.gender] : "множественное число"}</div>`;
       return "";
     }
 
@@ -326,7 +334,7 @@
       const { it, dir } = queue[idx];
       const grSide = `<div class="main gr">${grHTML(it)}</div>`;
       const ruSide = `<div class="main">${esc(it.ru)}</div>`;
-      const meta = `<div class="meta"><span>${esc(it.topic)}</span><span class="badge ${it.lvl}">${it.lvl}</span></div>`;
+      const meta = `<div class="meta"><span>${esc(it.topic)}</span><span>${it.ex ? `<span class="badge ex" title="Встречается в образцах экзаменов ΚΕΓ (${it.ex})">ΚΕΓ</span> ` : ""}<span class="badge ${it.lvl}">${it.lvl}</span></span></div>`;
       const speakBtn = `<button class="speak" data-say title="Произнести (S)">🔊</button>`;
       const front = dir === "gr-ru" ? grSide + speakBtn : ruSide + `<div class="sub">как это по-гречески?</div>`;
       const back = dir === "gr-ru"
@@ -624,8 +632,8 @@
     if (res.ok && !res.accentOnly) html = `<div class="msg ok">Верно! ✓</div>`;
     else if (res.accentOnly) html = `<div class="msg acc">${res.ok ? "Верно, но проверьте ударение" : "Ошибка в ударении"}</div><div class="correct">${GR.diffHTML(value, res.noArticle ? best.split(" ").slice(1).join(" ") : best)}</div>`;
     else html = `<div class="msg bad">${value.trim() ? "Неверно" : "Ответ"}</div><div class="correct">${value.trim() ? GR.diffHTML(value, best) : esc(best)}</div>`;
-    if (res.noArticle) html += `<p class="muted">Учите вместе с артиклем: <b class="gr art-${GENDER_CLS[it.gender]}">${esc(it.gr.split("/")[0])}</b></p>`;
-    if (it.kind === "nouns" && !res.noArticle && !(res.ok && !res.accentOnly)) html += `<p class="muted">${GENDER_NAME[it.gender]}</p>`;
+    if (res.noArticle) html += `<p class="muted">Учите вместе с артиклем: <b class="gr ${gcls(it)}">${esc(it.gr.split("/")[0])}</b></p>`;
+    if (it.kind === "nouns" && it.gender && !res.noArticle && !(res.ok && !res.accentOnly)) html += `<p class="muted">${GENDER_NAME[it.gender]}</p>`;
     return html;
   }
 
@@ -651,6 +659,7 @@
     const tabs = h(`<div class="tabs">${TABS.map(([id, n]) => `<button data-t="${id}">${n}</button>`).join("")}</div>`);
     root.appendChild(tabs);
     const bar = h(`<div class="toolbar"><label>Слова <select id="sdeck">${DECKS.map((d) => `<option value="${d.id}">${d.name}</option>`).join("")}</select></label>
+      <label class="chip ${UI.examOnly ? "on" : ""}"><input type="checkbox" id="sExOnly" ${UI.examOnly ? "checked" : ""}>Только из экзаменов</label>
       <span class="spacer"></span><span class="muted" style="font-size:13px" id="poolInfo"></span></div>`);
     root.appendChild(bar);
     const area = h(`<div></div>`);
@@ -658,6 +667,7 @@
     bindSay(area);
     $("#sdeck", bar).value = UI.spellDeck;
     $("#sdeck", bar).addEventListener("change", (e) => { UI.spellDeck = e.target.value; saveUI(); show(); });
+    $("#sExOnly", bar).addEventListener("change", (e) => { UI.examOnly = e.target.checked; e.target.parentElement.classList.toggle("on", UI.examOnly); saveUI(); show(); });
     tabs.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; UI.spellTab = b.dataset.t; saveUI(); history.replaceState(null, "", "#spelling/" + UI.spellTab); show(); });
 
     const sc = { ok: 0, n: 0 };
@@ -667,11 +677,11 @@
     const single = (it) => !/\s/.test(it.word) && it.kind !== "phrases";
 
     function pool() {
-      const base = items(UI.spellDeck);
+      const base = items(UI.spellDeck, "", UI.examOnly);
       switch (UI.spellTab) {
         case "choice": return base.filter(single);
         case "accent": return base.filter((i) => single(i) && GR.accentTask(i.word));
-        case "gender": return items("nouns");
+        case "gender": return items("nouns").filter((i) => i.gender);
         default: return base;
       }
     }
