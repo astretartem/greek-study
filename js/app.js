@@ -181,6 +181,7 @@
   function route() {
     const [name, sub] = (location.hash.slice(1) || "home").split("/");
     keyHandler = null;
+    const dd = $("#dict"); if (dd && dd.open) dd.close();
     if (hasTTS) speechSynthesis.cancel();
     $$("#nav a").forEach((a) => a.classList.toggle("active", a.getAttribute("href") === "#" + name));
     $$(".level button").forEach((b) => b.classList.toggle("on", b.dataset.level === S.level));
@@ -248,6 +249,7 @@
         <a class="card tile" href="#spelling/choice"><div class="ico">✍️</div><h3>Правописание</h3><p>ι / η / υ / ει / οι, ο / ω, ε / αι, двойные согласные</p></a>
         <a class="card tile" href="#spelling/accent"><div class="ico">🎯</div><h3>Ударения</h3><p>Куда ставить τόνο</p></a>
         <a class="card tile" href="#spelling/gender"><div class="ico">🧩</div><h3>Род: ο / η / το</h3><p>Артикли и окончания существительных</p></a>
+        <a class="card tile" href="#morph"><div class="ico">🌳</div><h3>Словообразование</h3><p>Приставки, суффиксы и семьи слов: одно правило — десятки слов</p></a>
         <a class="card tile" href="#grammar"><div class="ico">📘</div><h3>Справочник</h3><p>Алфавит, правила орфографии, таблицы</p></a>
         <a class="card tile" href="#stats"><div class="ico">📈</div><h3>Прогресс</h3><p>Статистика, экспорт и импорт</p></a>
       </div>
@@ -356,7 +358,11 @@
     let body = "";
     if (art) body += `<div class="card" style="padding:14px"><b class="gr">${esc(clean)}</b> — ${esc(art)}</div>`;
     body += other.map((it) => wordEntryHTML(it, clean)).join("");
+    const keys = new Set([mk].concat(hits.map((it) => formKey(it.kind === "verbs" ? it.verb.v : it.word || it.gr))));
+    const mo = morphHTML(keys);
+    if (mo && !hits.length) body += mo;
     body += verbs.map((it) => verbEntryHTML(it, mk)).join("");
+    if (mo && hits.length) body += mo;
     if (!body) body = `<div class="card empty" style="padding:24px">Слова «<span class="gr">${esc(clean)}</span>» пока нет в словаре сайта.<br>
       <button class="speak" data-say="${esc(clean)}">🔊</button></div>`;
     dict.innerHTML = `<div class="dict-head"><span class="muted">Словарь</span><b class="gr" style="font-size:1.2rem">${esc(clean)}</b>
@@ -375,6 +381,70 @@
       return `${esc(m[1])}<button class="w" data-word="${esc(m[2])}">${esc(m[2])}</button>${esc(m[3])}`;
     }).join("");
   }
+
+  /* ================= Словообразование: данные и словарь ================= */
+  const MORPH = window.MORPH || { groups: [], families: [] };
+  const MORPH_ITEMS = MORPH.groups.flatMap((g) => g.items.map((it) => Object.assign(it, { gtitle: g.title })));
+  MORPH_ITEMS.forEach((it) => it.ex.forEach((e) => { e.aff = it; }));
+  const MORPH_EX = MORPH_ITEMS.flatMap((it) => it.ex);
+  let MORPH_IDX = null;
+  function morphIndex() {
+    if (MORPH_IDX) return MORPH_IDX;
+    const d = new Map(), b = new Map(), f = new Map();
+    const push = (m, k, v) => { k = formKey(k); let a = m.get(k); if (!a) m.set(k, (a = [])); if (!a.includes(v)) a.push(v); };
+    MORPH_EX.forEach((e) => { push(d, e.w, e); e.base.split("+").forEach((x) => x.trim() && push(b, x.trim(), e)); });
+    MORPH.families.forEach((fam) => fam.w.forEach((x) => push(f, x.w, fam)));
+    return (MORPH_IDX = { d, b, f });
+  }
+  // варианты аффикса: «συν- / συμ-» → приставки, «-ση / -ψη» → суффиксы
+  function affixParts(aff) {
+    if (aff.parts) return aff.parts;
+    const pre = [], suf = [];
+    (aff.a.match(/[(]?[Ͱ-Ͽἀ-῿()]*-[Ͱ-Ͽἀ-῿()]*[)]?/g) || []).forEach((t) => {
+      t = t.replace(/^\((.*)\)$/, "$1");
+      const vs = /\(/.test(t) ? [t.replace(/[()]/g, ""), t.replace(/\(.*?\)/g, "")] : [t];
+      vs.forEach((v) => {
+        if (v.startsWith("-") && v.endsWith("-")) return;
+        if (v.endsWith("-")) { const x = formKey(v.slice(0, -1)); pre.push(x); if (/[αεοι]$/.test(x)) pre.push(x.slice(0, -1)); }
+        else if (v.startsWith("-")) suf.push(formKey(v.slice(1)));
+      });
+    });
+    return (aff.parts = { pre: pre.filter(Boolean).sort((a, b) => b.length - a.length), suf: suf.filter(Boolean).sort((a, b) => b.length - a.length) });
+  }
+  /** Слово с подсвеченной приставкой или суффиксом */
+  function affHL(w, aff) {
+    const k = formKey(w), { pre, suf } = affixParts(aff);
+    const p = pre.find((x) => k.startsWith(x) && k.length > x.length + 1);
+    if (p) return `<b class="aff-hl">${esc(w.slice(0, p.length))}</b>${esc(w.slice(p.length))}`;
+    const s = suf.find((x) => k.endsWith(x) && k.length > x.length + 1);
+    if (s) return `${esc(w.slice(0, w.length - s.length))}<b class="aff-hl">${esc(w.slice(w.length - s.length))}</b>`;
+    return esc(w);
+  }
+  const wordBtn = (w) => `<button class="w gr" data-dict="${esc(w)}">${esc(w)}</button>`;
+  function morphHTML(keys) {
+    const { d, b, f } = morphIndex();
+    const der = [], from = [], fams = [];
+    keys.forEach((k) => {
+      (d.get(k) || []).forEach((e) => der.includes(e) || der.push(e));
+      (b.get(k) || []).forEach((e) => from.includes(e) || from.push(e));
+      (f.get(k) || []).forEach((x) => fams.includes(x) || fams.push(x));
+    });
+    if (!der.length && !from.length && !fams.length) return "";
+    let html = `<div class="card morph-card" style="padding:16px"><h3 style="margin:0 0 8px">🧩 Словообразование</h3>`;
+    der.forEach((e) => {
+      html += `<p style="margin:0 0 8px"><span class="gr" style="font-size:1.25rem">${affHL(e.w, e.aff)}</span>
+        <button class="speak sm" data-say="${esc(e.w)}">🔊</button> — ${esc(e.ru)}<br>
+        <span class="muted" style="font-size:14px"><b class="gr aff-hl">${esc(e.aff.a)}</b> ${esc(e.aff.ru)}${e.base ? ` + ${e.base.split("+").map((x) => wordBtn(x.trim())).join(" + ")} (${esc(e.baseRu)})` : ""}</span></p>`;
+    });
+    const fromOnly = from.filter((e) => !der.includes(e));
+    if (fromOnly.length) html += `<p style="margin:0 0 8px"><span class="muted">Образованные слова:</span> ${fromOnly.map((e) => `${wordBtn(e.w)} <span class="muted" style="font-size:13px">${esc(e.ru)}</span>`).join(" · ")}</p>`;
+    fams.forEach((fam) => {
+      html += `<p style="margin:0 0 6px"><span class="muted">Семья</span> <b class="gr">${esc(fam.root)}</b> <span class="muted">(${esc(fam.ru)}):</span>
+        ${fam.w.map((x) => wordBtn(x.w)).join(" · ")}</p>`;
+    });
+    return html + `</div>`;
+  }
+  const hasMorph = (k) => { const { d, b, f } = morphIndex(); k = formKey(k); return d.has(k) || b.has(k) || f.has(k); };
 
   /* ================= Карточки ================= */
   views.cards = (root) => {
@@ -443,11 +513,12 @@
       if (it.kind === "verbs") {
         const pp = GR.principalParts(it.verb);
         return `<div class="parts">${pp.map((x) => `<span>${esc(x)}</span>`).join("")}</div>
-          <button class="btn small" data-verbdict style="margin-top:10px">📖 Все времена и лица</button>
+          <button class="btn small" data-verbdict style="margin-top:10px">📖 Все времена и лица</button>${hasMorph(it.verb.v) ? ` <button class="btn small" data-morphdict style="margin-top:10px">🧩 Однокоренные</button>` : ""}
           <div class="sub" style="font-size:13px">${GR.TYPE_NAMES[it.verb.p]}${it.verb.note ? " · " + esc(it.verb.note) : ""}</div>`;
       }
-      if (it.kind === "nouns") return `<div class="sub ${gcls(it)}" style="font-size:14px">${it.gender ? GENDER_NAME[it.gender] : "множественное число"}</div>`;
-      return "";
+      const mb = hasMorph(it.word || it.gr) ? `<button class="btn small" data-morphdict style="margin-top:10px">🧩 Состав и однокоренные</button>` : "";
+      if (it.kind === "nouns") return `<div class="sub ${gcls(it)}" style="font-size:14px">${it.gender ? GENDER_NAME[it.gender] : "множественное число"}</div>${mb}`;
+      return mb;
     }
 
     function render() {
@@ -482,6 +553,7 @@
         const wbtn = e.target.closest("[data-word]");
         if (wbtn) { e.stopPropagation(); openDict(wbtn.dataset.word); return; }
         if (e.target.closest("[data-verbdict]")) { e.stopPropagation(); openDict(it.verb.v, it); return; }
+        if (e.target.closest("[data-morphdict]")) { e.stopPropagation(); openDict(it.word || it.gr, it); return; }
         if (e.target.closest("[data-say]")) { e.stopPropagation(); speak(it.gr); return; }
         flip();
       });
@@ -970,6 +1042,198 @@
         if (done && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); show(); }
         else if (!done && ["1", "2", "3"].includes(e.key)) answer(OPTS[Number(e.key) - 1][1]);
       };
+    }
+
+    show();
+  };
+
+  /* ================= Словообразование: раздел ================= */
+  views.morph = (root, sub) => {
+    if (sub) UI.morphTab = sub;
+    if (!UI.morphTab) UI.morphTab = "learn";
+    if (!UI.morphGroup) UI.morphGroup = "all";
+    const TABS = [["learn", "📚 Правила"], ["meaning", "🤔 Угадай значение"], ["affix", "🧩 Какой аффикс?"],
+      ["build", "✏️ Образуй слово"], ["family", "🌳 Семьи слов"], ["odd", "🔍 Лишнее слово"]];
+    root.appendChild(h(`<div><h1 style="margin-bottom:4px">Словообразование</h1>
+      <p class="muted" style="margin-top:0">Зная одну приставку или суффикс, вы понимаете десятки новых слов: <span class="gr">γράφω</span> → <span class="gr">ξαναγράφω, υπογράφω, περιγραφή, γραφείο…</span></p></div>`));
+    const tabs = h(`<div class="tabs">${TABS.map(([id, n]) => `<button data-t="${id}">${n}</button>`).join("")}</div>`);
+    root.appendChild(tabs);
+    const bar = h(`<div class="toolbar"><label>Группа <select id="mgroup"><option value="all">Все группы</option>
+      ${MORPH.groups.map((g) => `<option value="${g.id}">${esc(g.title)}</option>`).join("")}</select></label>
+      <span class="spacer"></span><span class="muted" style="font-size:13px" id="mInfo"></span></div>`);
+    root.appendChild(bar);
+    const area = h(`<div></div>`);
+    root.appendChild(area);
+    bindSay(area);
+    area.addEventListener("click", (e) => {
+      const w = e.target.closest("[data-dict]");
+      if (w && !w.closest("[data-o]")) openDict(w.dataset.dict);
+    });
+    $("#mgroup", bar).value = UI.morphGroup;
+    $("#mgroup", bar).addEventListener("change", (e) => { UI.morphGroup = e.target.value; saveUI(); show(); });
+    tabs.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; UI.morphTab = b.dataset.t; saveUI(); history.replaceState(null, "", "#morph/" + UI.morphTab); show(); });
+
+    const sc = { ok: 0, n: 0 };
+    let last = null;
+    const pickFrom = (pool) => { let it; for (let k = 0; k < 8; k++) { it = rnd(pool); if (it !== last) break; } last = it; return it; };
+    const scoreHTML = () => `<div class="score">Верно: <b>${sc.ok}</b> из <b>${sc.n}</b></div>`;
+    const affs = () => MORPH_ITEMS.filter((a) => lvlOk(a.lvl) && (UI.morphGroup === "all" || a.group === UI.morphGroup));
+    const exPool = () => affs().flatMap((a) => a.ex).filter((e) => e.base);
+    const fams = () => MORPH.families;
+    const baseHTML = (e) => `${e.base.split("+").map((x) => `<span class="gr">${esc(x.trim())}</span>`).join(" + ")} <span class="muted">(${esc(e.baseRu)})</span>`;
+    const nextBtn = `<button class="btn primary" data-next style="margin-top:10px">Дальше <kbd>⏎</kbd></button>`;
+
+    function show() {
+      $$("button", tabs).forEach((b) => b.classList.toggle("on", b.dataset.t === UI.morphTab));
+      const famTab = UI.morphTab === "family" || UI.morphTab === "odd";
+      $("#mgroup", bar).parentElement.style.display = famTab ? "none" : "";
+      area.innerHTML = ""; keyHandler = null;
+      const info = $("#mInfo", bar);
+      if (famTab) info.textContent = `${fams().length} семей · ${fams().reduce((a, f) => a + f.w.length, 0)} слов`;
+      else info.textContent = `${affs().length} аффиксов · ${affs().reduce((a, x) => a + x.ex.length, 0)} слов`;
+      if (!famTab && !affs().length) { area.innerHTML = `<div class="card empty">В этой группе на уровне ${S.level} ничего нет — переключите уровень на B1 или выберите другую группу.</div>`; return; }
+      ({ learn, meaning, affix, build, family, odd })[UI.morphTab]();
+    }
+
+    function learn() {
+      let g = "";
+      affs().forEach((a) => {
+        if (a.group !== g) { g = a.group; area.appendChild(h(`<div class="ref-group">${esc(a.gtitle)}</div>`)); }
+        area.appendChild(h(`<details class="ref-sec morph-sec"><summary><span class="gr aff-hl">${esc(a.a)}</span> <span>${esc(a.ru)}</span>
+            ${a.lvl === "B1" ? `<span class="badge B1">B1</span>` : ""} <span class="muted" style="font-size:13px;font-weight:400">· ${a.ex.length}</span></summary>
+          <div class="body">${a.note ? `<p class="muted" style="margin-top:0">${esc(a.note)}</p>` : ""}
+          <table class="ref morph-ex">${a.ex.map((e) => `<tr>
+            <td class="gr"><button class="w" data-dict="${esc(e.w)}">${affHL(e.w, a)}</button> <button class="speak sm" data-say="${esc(e.w)}">🔊</button></td>
+            <td>${esc(e.ru)}</td>
+            <td class="muted" style="font-size:14px">${e.base ? `← ${e.base.split("+").map((x) => `<span class="gr">${esc(x.trim())}</span>`).join(" + ")} <span>${esc(e.baseRu)}</span>` : ""}</td></tr>`).join("")}</table></div></details>`));
+      });
+      const first = $("details", area); if (first) first.open = true;
+    }
+
+    function choiceTask({ label, prompt, opts, correct, render, onDone }) {
+      const el = h(`<div class="card ex">${scoreHTML()}
+        <div class="label">${label}</div>${prompt}
+        <div class="options">${opts.map((o, i) => `<button data-o="${i}"><span class="k">${i + 1}</span>${render(o)}</button>`).join("")}</div>
+        <div class="feedback"></div></div>`);
+      area.appendChild(el);
+      let done = false;
+      function answer(i) {
+        if (done) return; done = true;
+        const ok = opts[i] === correct;
+        sc.n++; if (ok) sc.ok++;
+        logAnswer(ok, "morph");
+        $$("[data-o]", el).forEach((b) => {
+          b.disabled = true;
+          const o = opts[Number(b.dataset.o)];
+          if (o === correct) b.classList.add("ok"); else if (Number(b.dataset.o) === i) b.classList.add("bad");
+        });
+        $(".feedback", el).innerHTML = `<div class="msg ${ok ? "ok" : "bad"}">${ok ? "Верно! ✓" : "Неверно"}</div>${onDone()}${nextBtn}`;
+        $("[data-next]", el).addEventListener("click", show);
+      }
+      $$("[data-o]", el).forEach((b) => b.addEventListener("click", () => answer(Number(b.dataset.o))));
+      keyHandler = (e) => {
+        if (done && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); show(); }
+        else if (!done && /^[1-4]$/.test(e.key) && opts[Number(e.key) - 1] !== undefined) answer(Number(e.key) - 1);
+      };
+    }
+    const explain = (e) => `<div class="correct"><span class="gr">${affHL(e.w, e.aff)}</span> <button class="speak sm" data-say="${esc(e.w)}">🔊</button> — ${esc(e.ru)}</div>
+      <p class="muted" style="margin:6px 0 0"><b class="gr aff-hl">${esc(e.aff.a)}</b> = ${esc(e.aff.ru)}${e.aff.note ? `<br><span style="font-size:14px">${esc(e.aff.note)}</span>` : ""}</p>`;
+
+    function meaning() {
+      const pool = exPool();
+      const e = pickFrom(pool);
+      const sameBase = shuffle(MORPH_EX.filter((x) => x !== e && x.base === e.base && x.ru !== e.ru));
+      const sameAff = shuffle(e.aff.ex.filter((x) => x !== e));
+      const any = shuffle(pool.filter((x) => x !== e));
+      const opts = [e.ru];
+      sameBase.concat(sameAff, any).forEach((x) => { if (opts.length < 4 && !opts.includes(x.ru)) opts.push(x.ru); });
+      choiceTask({
+        label: "Что означает слово? Разберите его на части",
+        prompt: `<div class="prompt gr">${esc(e.w)} <button class="speak sm" data-say="${esc(e.w)}">🔊</button></div>
+          <div style="margin-bottom:6px">исходное слово: ${baseHTML(e)}</div>`,
+        opts: shuffle(opts), correct: e.ru, render: (o) => esc(o),
+        onDone: () => { speak(e.w); return explain(e); },
+      });
+    }
+
+    function affix() {
+      const pool = exPool();
+      const e = pickFrom(pool);
+      const sameGroup = shuffle(MORPH_ITEMS.filter((a) => a !== e.aff && a.group === e.aff.group && lvlOk(a.lvl)));
+      const other = shuffle(MORPH_ITEMS.filter((a) => a !== e.aff && a.group !== e.aff.group && lvlOk(a.lvl)));
+      const opts = [e.aff].concat(sameGroup.concat(other).slice(0, 3));
+      choiceTask({
+        label: "Какая приставка или суффикс даёт это значение?",
+        prompt: `<div class="prompt" style="font-size:1.4rem">${baseHTML(e)}</div>
+          <div style="font-size:1.2rem;margin-bottom:6px">→ «${esc(e.ru)}»</div>`,
+        opts: shuffle(opts), correct: e.aff, render: (a) => `<span class="gr">${esc(a.a)}</span>`,
+        onDone: () => { speak(e.w); return explain(e); },
+      });
+    }
+
+    function build() {
+      const pool = exPool().filter((e) => !/\s/.test(e.w) && !e.base.includes("+"));
+      if (!pool.length) { area.innerHTML = `<div class="card empty">Здесь нет подходящих слов — выберите другую группу.</div>`; return; }
+      const e = pickFrom(pool);
+      const el = h(`<div class="card ex">${scoreHTML()}
+        <div class="label">Образуйте слово</div>
+        <div class="prompt" style="font-size:1.4rem">${baseHTML(e)} + <span class="gr aff-hl">${esc(e.aff.a)}</span></div>
+        <div class="muted" style="margin-bottom:4px">${esc(e.aff.ru)}</div>
+        <div style="font-size:1.2rem">= «${esc(e.ru)}»</div>
+        <div class="answer-row"></div>
+        <div class="row" style="justify-content:center;margin-top:14px">
+          <button class="btn primary" data-check>Проверить <kbd>⏎</kbd></button><button class="btn" data-skip>Не знаю</button></div>
+        <div class="feedback"></div></div>`);
+      const { wrap, input } = greekInput(() => (answered ? show() : check()));
+      $(".answer-row", el).appendChild(wrap);
+      area.appendChild(el);
+      input.focus();
+      let answered = false;
+      function check(giveUp) {
+        if (answered) return;
+        if (!giveUp && !input.value.trim()) { input.focus(); return; }
+        answered = true;
+        const res = giveUp ? { ok: false } : GR.check(input.value, [e.w], { strict: S.strict });
+        sc.n++; if (res.ok) sc.ok++;
+        logAnswer(res.ok, "morph");
+        input.readOnly = true;
+        input.classList.add(res.ok && !res.accentOnly ? "ok" : res.accentOnly ? "acc" : "bad");
+        $(".feedback", el).innerHTML = feedbackHTML(res, giveUp ? "" : input.value, { gr: e.w, kind: "morph" }) + explain(e) + nextBtn;
+        $("[data-next]", el).addEventListener("click", show);
+        $("[data-check]", el).style.display = "none"; $("[data-skip]", el).style.display = "none";
+        speak(e.w);
+        input.focus();
+      }
+      $("[data-check]", el).addEventListener("click", () => check());
+      $("[data-skip]", el).addEventListener("click", () => check(true));
+    }
+
+    function family() {
+      area.appendChild(h(`<p class="muted" style="margin-top:0">Один корень — много слов. Нажмите на слово, чтобы открыть его в словаре.</p>`));
+      const grid = h(`<div class="fam-grid"></div>`);
+      fams().forEach((f) => grid.appendChild(h(`<div class="card fam"><h3><span class="gr aff-hl">${esc(f.root)}</span> <span class="muted" style="font-weight:400">${esc(f.ru)}</span></h3>
+        <ul>${f.w.map((x) => `<li><button class="w gr" data-dict="${esc(x.w)}">${esc(x.w)}</button> <button class="speak sm" data-say="${esc(x.w)}">🔊</button> <span class="muted">${esc(x.ru)}</span></li>`).join("")}</ul></div>`)));
+      area.appendChild(grid);
+    }
+
+    function odd() {
+      const all = fams();
+      const f = pickFrom(all);
+      const inF = new Set(f.w.map((x) => formKey(x.w)));
+      const three = shuffle(f.w).slice(0, 3);
+      const others = shuffle(all.filter((x) => x !== f).flatMap((x) => x.w.map((w) => ({ ...w, fam: x })))).filter((w) => !inF.has(formKey(w.w)));
+      const intruder = others[0];
+      const opts = shuffle(three.concat([intruder]));
+      choiceTask({
+        label: "Какое слово не из этой семьи?",
+        prompt: `<div class="muted" style="margin-bottom:6px">Три слова однокоренные, одно — лишнее</div>`,
+        opts, correct: intruder, render: (x) => `<span class="gr">${esc(x.w)}</span>`,
+        onDone: () => {
+          $$("[data-o]", area).forEach((b) => { const x = opts[Number(b.dataset.o)]; b.insertAdjacentHTML("beforeend", `<span class="muted" style="font-size:13px;margin-left:8px">${esc(x.ru)}</span>`); });
+          return `<p style="margin:8px 0 0">Семья <b class="gr aff-hl">${esc(f.root)}</b> (${esc(f.ru)}): ${f.w.map((x) => wordBtn(x.w)).join(" · ")}</p>
+            <p class="muted" style="margin:6px 0 0"><span class="gr">${esc(intruder.w)}</span> — из семьи <b class="gr">${esc(intruder.fam.root)}</b> (${esc(intruder.fam.ru)})</p>`;
+        },
+      });
     }
 
     show();

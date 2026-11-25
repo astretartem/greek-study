@@ -264,3 +264,15 @@ dialog .actions { display: flex; justify-content: flex-end; margin-top: 16px; }
 button.w { font: inherit; color: inherit; background: none; border: 0; padding: 0 2px; margin: 0 -2px; border-radius: 6px; cursor: pointer; border-bottom: 2px dotted color-mix(in srgb, var(--blue) 55%, transparent); }
 button.w:hover, button.w:focus-visible { background: var(--blue-soft); color: var(--blue); outline: none; }
 @media (max-width: 720px) { .face .main.phrase { font-size: 1.5rem; } #dict { padding: 0 12px 12px; } }
+
+/* Словообразование */
+.aff-hl { color: var(--blue); font-weight: 700; }
+.morph-sec summary { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.morph-sec summary .aff-hl { font-size: 1.15rem; }
+.morph-ex td { vertical-align: top; }
+.morph-ex button.w { font-size: 1.1rem; }
+.fam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.fam h3 { margin: 0 0 8px; }
+.fam ul { list-style: none; margin: 0; padding: 0; }
+.fam li { padding: 3px 0; }
+.morph-card .w { font-size: 1.05rem; }
