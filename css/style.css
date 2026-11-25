@@ -276,3 +276,6 @@ button.w:hover, button.w:focus-visible { background: var(--blue-soft); color: va
 .fam ul { list-style: none; margin: 0; padding: 0; }
 .fam li { padding: 3px 0; }
 .morph-card .w { font-size: 1.05rem; }
+
+.site-foot { text-align: center; font-size: 13px; color: var(--muted, #6b7280); padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); line-height: 1.6; }
+.site-foot a { color: inherit; text-decoration: underline; }

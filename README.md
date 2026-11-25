@@ -54,3 +54,12 @@
 - [Popmots](https://github.com/claudiabdm/popmots): локальное веб-приложение со словарём и интервальным повторением
 - [modern-greek-inflexion](https://pypi.org/project/modern-greek-inflexion/2.0.0/): правила спряжения новогреческого
 - [EEE project](https://codeberg.org/EEE-project/modern-greek-eee): греческие учебные инструменты, тренажёр глаголов
+
+## Лицензия
+
+Проект бесплатный и свободный, навсегда.
+
+- Код: [MIT](LICENSE).
+- Словарь, упражнения и справочник: [CC BY-SA 4.0](LICENSE-CONTENT.md). Можно копировать и дорабатывать с указанием источника и на тех же условиях.
+
+Исправления и идеи приветствуются: присылайте issue или pull request.
