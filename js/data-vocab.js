@@ -171,7 +171,6 @@ Object.assign(window.VOCAB_RAW, {
 νόστιμος -η -ο | вкусный | A1
 ξανθός -ιά -ό | светловолосый | A2
 μελαχρινός -ή -ό | темноволосый | A2
-νέος (ηλικία) | молодой | A1
 μεγάλος (ηλικία) | пожилой, взрослый | A1
 ηλικιωμένος -η -ο | пожилой | B1
 παντρεμένος -η -ο | женатый, замужняя | A1
@@ -369,7 +368,6 @@ Object.assign(window.VOCAB_RAW, {
 πώς | как? | A1
 γιατί | почему; потому что | A1
 πόσο | сколько? | A1
-πόσος | сколько? (м.р.) | A1
 εγώ | я | A1
 εσύ | ты | A1
 αυτός | он; этот | A1
@@ -390,7 +388,6 @@ Object.assign(window.VOCAB_RAW, {
 μερικοί | некоторые | A2
 λίγοι | немногие | A2
 πολλοί | многие | A1
-άλλος | другой | A1
 ο ίδιος | сам; тот же | A2
 δικός μου | мой собственный | A2
 όπου | где (там, где) | B1
@@ -427,7 +424,6 @@ Object.assign(window.VOCAB_RAW, {
 αλλά | но | A1
 όμως | однако | A2
 επειδή | потому что | A1
-γιατί (σύνδεσμος) | потому что | A1
 όταν | когда (союз) | A1
 αν | если | A2
 να | чтобы (частица) | A1
@@ -663,7 +659,9 @@ Object.assign(window.VOCAB_RAW, {
         const dupKey = kind + ":" + gr + (hint ? "(" + hint + ")" : "");
         if (byKey.has(dupKey)) {
           const it = byKey.get(dupKey);
-          if (!it.ru.split("; ").includes(ru)) it.ru += "; " + ru;
+          const have = it.ru.split(/[;,]\s*/);
+          const add = ru.split(/[;,]\s*/).filter((x) => !have.includes(x));
+          if (add.length) it.ru += "; " + add.join(", ");
           if (lvl < it.lvl) it.lvl = lvl;
           return;
         }
