@@ -1,11 +1,13 @@
 /* Синхронизация прогресса между устройствами.
  *
- * Устройства соединяются напрямую по WebRTC (канал данных шифруется DTLS).
- * Сигнальный сервер нужен только для знакомства. Он видит лишь хеш комнаты и
- * зашифрованные служебные сообщения: ключ шифрования выводится из секрета
- * пары, который знают только связанные устройства. Ничего не хранится.
+ * 1. Напрямую по WebRTC (канал данных шифруется DTLS), когда устройства открыты
+ *    одновременно. Сигнальный сервер только знакомит устройства: он видит хеш
+ *    комнаты и зашифрованные служебные сообщения.
+ * 2. Через зашифрованную копию на сервере: устройства не обязаны быть открыты
+ *    одновременно. Ключ выводится из секрета пары, сервер данные прочитать не может.
  *
  * GSync.start({ secret, getState, onData, onStatus }) -> { broadcast(obj), close() }
+ * GSync.cloud({ secret, getState, onData, onStatus }) -> { markDirty(), syncNow(), wipe(), close() }
  * GSync.newSecret() -> случайный секрет пары
  */
 (function () {
@@ -215,8 +217,116 @@
     };
   }
 
+  /* ---------- Копия прогресса на сервере ----------
+   * Прогресс сжимается (gzip) и шифруется AES-GCM на устройстве. Сервер хранит
+   * нечитаемый блок, id и токен записи выводятся из секрета пары. Конфликты
+   * решаются версиями: при 409 скачиваем свежую копию, объединяем и пишем снова.
+   */
+  const API = SIGNAL_URL.replace(/^wss:/, "https:").replace(/^ws:/, "http:") + "/v1/blob/";
+
+  async function deriveCloud(secret) {
+    const id = hex(await sha256("greek-sync/blob/" + secret));
+    const token = hex(await sha256("greek-sync/auth/" + secret));
+    const raw = await sha256("greek-sync/data/" + secret);
+    const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+    return { id, token, key };
+  }
+  const canZip = typeof CompressionStream === "function" && typeof DecompressionStream === "function";
+  const pipe = (bytes, stream) => new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer();
+  // Формат: [1 байт: 1 = gzip, 0 = без сжатия] [12 байт iv] [шифротекст]
+  async function pack(key, obj) {
+    let body = te.encode(JSON.stringify(obj));
+    const zip = canZip ? 1 : 0;
+    if (zip) body = new Uint8Array(await pipe(body, new CompressionStream("gzip")));
+    const iv = rand(12);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, body));
+    const out = new Uint8Array(1 + 12 + ct.length);
+    out[0] = zip; out.set(iv, 1); out.set(ct, 13);
+    return out;
+  }
+  async function unpack(key, buf) {
+    const b = new Uint8Array(buf);
+    if (b.length < 14) return null;
+    try {
+      let pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b.slice(1, 13) }, key, b.slice(13));
+      if (b[0] === 1) pt = await pipe(pt, new DecompressionStream("gzip"));
+      return JSON.parse(td.decode(pt));
+    } catch (e) {
+      return null;
+    }
+  }
+  const verOf = (res) => parseInt((res.headers.get("ETag") || "").replace(/\D/g, ""), 10) || 0;
+
+  function cloud({ secret, getState, onData, onStatus }) {
+    let c = null, ver = 0, dirty = true, busy = false, again = false, closed = false, timer = null, poll = null;
+    const ready = deriveCloud(secret).then((d) => { c = d; });
+
+    async function pull() {
+      const res = await fetch(API + c.id, { cache: "no-store" });
+      if (res.status === 404) { ver = 0; return; }
+      if (!res.ok) throw new Error("GET " + res.status);
+      ver = verOf(res);
+      const data = await unpack(c.key, await res.arrayBuffer());
+      if (data) onData(Object.assign({}, data, { t: "state" }));
+    }
+    async function push(keepalive) {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const body = await pack(c.key, getState());
+        const res = await fetch(API + c.id, {
+          method: "PUT", body, keepalive: !!keepalive && body.length < 60000,
+          headers: { Authorization: "Bearer " + c.token, "If-Match": `"${ver}"`, "Content-Type": "application/octet-stream" },
+        });
+        if (res.ok) { ver = verOf(res); return true; }
+        if (res.status !== 409 || keepalive) throw new Error("PUT " + res.status);
+        await pull(); // кто-то записал раньше нас: объединяем и пробуем снова
+      }
+      throw new Error("PUT conflict");
+    }
+    async function run() {
+      if (closed) return;
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        await ready;
+        onStatus("saving");
+        await pull();
+        if (dirty) { dirty = false; await push(); }
+        onStatus("saved", Date.now());
+      } catch (e) {
+        dirty = true;
+        onStatus("error");
+      } finally {
+        busy = false;
+        if (again) { again = false; run(); }
+      }
+    }
+    const onVisible = () => { if (document.visibilityState === "visible") run(); };
+    const onHide = () => { if (dirty && c && !busy) { dirty = false; push(true).catch(() => { dirty = true; }); } };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pagehide", onHide);
+    poll = setInterval(() => { if (document.visibilityState === "visible") run(); }, 60000);
+    run();
+
+    return {
+      markDirty() { dirty = true; clearTimeout(timer); timer = setTimeout(run, 4000); },
+      syncNow: run,
+      async wipe() {
+        await ready;
+        const res = await fetch(API + c.id, { method: "DELETE", headers: { Authorization: "Bearer " + c.token } });
+        if (!res.ok && res.status !== 404) throw new Error("DELETE " + res.status);
+      },
+      close() {
+        closed = true;
+        clearTimeout(timer); clearInterval(poll);
+        document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("pagehide", onHide);
+      },
+    };
+  }
+
   window.GSync = {
     start,
+    cloud,
     newSecret: () => b64u.enc(rand(16)),
     supported: () => "RTCPeerConnection" in window && "WebSocket" in window && !!(window.crypto && crypto.subtle),
   };

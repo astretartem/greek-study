@@ -38,8 +38,9 @@
   const saveP = () => store.set("gr.progress", P);
   const saveLog = () => { LOG = sumLogs(LOGS); store.set("gr.logs", LOGS); };
 
-  let SYNC = null; // активная синхронизация (js/sync.js)
-  const syncSend = (obj) => { if (SYNC) SYNC.broadcast(obj); };
+  let SYNC = null;  // прямая синхронизация по WebRTC (js/sync.js)
+  let CLOUD = null; // зашифрованная копия на сервере (js/sync.js)
+  const syncSend = (obj) => { if (SYNC) SYNC.broadcast(obj); if (CLOUD) CLOUD.markDirty(); };
 
   function logAnswer(ok, kind) {
     const t = dayKey();
@@ -1306,7 +1307,8 @@
     return changed;
   }
 
-  const SY = { cfg: store.get("gr.sync", null), status: "off", peers: 0, last: 0, pending: null, showQR: false };
+  const SY = { cfg: store.get("gr.sync", null), status: "off", peers: 0, last: 0, pending: null, showQR: false, cloud: "off", cloudAt: 0 };
+  const CLOUD_TEXT = { off: "", saving: "Сверяю с копией на сервере…", saved: "Копия на сервере сохранена", error: "Сервер недоступен, повторю позже" };
   const SYNC_TEXT = {
     off: "Не связано",
     connecting: "Подключаюсь…",
@@ -1321,27 +1323,41 @@
     if (SY.last) { const d = new Date(SY.last); t += ` · синхронизировано в ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
     return t;
   }
+  function cloudStatusText() {
+    let t = CLOUD_TEXT[SY.cloud] || "";
+    if (SY.cloud === "saved" && SY.cloudAt) { const d = new Date(SY.cloudAt); t += ` в ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+    return t;
+  }
   function paintSyncStatus() {
     $$("[data-sync-status]").forEach((el) => { el.textContent = syncStatusText(); el.dataset.state = SY.status; });
+    $$("[data-cloud-status]").forEach((el) => { el.textContent = cloudStatusText(); el.dataset.state = SY.cloud === "saved" ? "connected" : SY.cloud === "error" ? "offline" : "waiting"; });
+  }
+  function onRemote(m, fromPeer) {
+    if (m.t !== "state" && m.t !== "delta") return;
+    if (fromPeer) SY.last = Date.now();
+    if (mergeRemote(m)) {
+      saveP(); saveLog();
+      if (m.t === "state") toast("Прогресс синхронизирован");
+      const view = (location.hash.slice(1) || "home").split("/")[0];
+      if (view === "home" || view === "stats") route();
+    }
+    paintSyncStatus();
   }
   function startSync() {
     if (SYNC) SYNC.close();
+    if (CLOUD) CLOUD.close();
+    SYNC = CLOUD = null;
     if (!SY.cfg || !window.GSync || !GSync.supported()) return;
+    const getState = () => ({ P, logs: LOGS });
     SYNC = GSync.start({
-      secret: SY.cfg.secret,
-      getState: () => ({ P, logs: LOGS }),
-      onData: (m) => {
-        if (m.t !== "state" && m.t !== "delta") return;
-        SY.last = Date.now();
-        if (mergeRemote(m)) {
-          saveP(); saveLog();
-          if (m.t === "state") toast("Прогресс синхронизирован");
-          const view = (location.hash.slice(1) || "home").split("/")[0];
-          if (view === "home" || view === "stats") route();
-        }
-        paintSyncStatus();
-      },
+      secret: SY.cfg.secret, getState,
+      onData: (m) => onRemote(m, true),
       onStatus: (s, n) => { SY.status = s; SY.peers = n; paintSyncStatus(); },
+    });
+    CLOUD = GSync.cloud({
+      secret: SY.cfg.secret, getState,
+      onData: (m) => onRemote(m, false),
+      onStatus: (s, at) => { SY.cloud = s; if (at) SY.cloudAt = at; paintSyncStatus(); },
     });
   }
   function pairWith(secret) {
@@ -1351,7 +1367,8 @@
   }
   function unpair() {
     if (SYNC) SYNC.close();
-    SYNC = null; SY.cfg = null; SY.status = "off"; SY.showQR = false; SY.last = 0;
+    if (CLOUD) CLOUD.close();
+    SYNC = CLOUD = null; SY.cfg = null; SY.status = "off"; SY.cloud = "off"; SY.showQR = false; SY.last = 0;
     store.set("gr.sync", null);
   }
   const syncLink = () => location.origin + location.pathname + "#sync=" + SY.cfg.secret;
@@ -1387,18 +1404,19 @@
       return el;
     }
     if (!SY.cfg) {
-      p("Свяжите телефон и компьютер, и прогресс будет объединяться напрямую между ними, когда сайт открыт на обоих. Прогресс не хранится ни на каком сервере.");
-      const row = el.appendChild(h(`<div class="row"><button class="btn primary" data-sync-new>Связать устройства</button></div>`));
+      p("Включите синхронизацию, и прогресс будет общим на телефоне и компьютере, а его копия сохранится на сервере на случай потери устройства. Копия шифруется на устройстве: прочитать её могут только ваши устройства, сервер — нет.");
+      const row = el.appendChild(h(`<div class="row"><button class="btn primary" data-sync-new>Включить и связать устройства</button></div>`));
       $("[data-sync-new]", row).addEventListener("click", () => { pairWith(GSync.newSecret()); SY.showQR = true; route(); });
       return el;
     }
     el.appendChild(h(`<p class="sync-status" data-sync-status></p>`));
+    el.appendChild(h(`<p class="sync-status" data-cloud-status></p>`));
     if (SY.showQR) {
       const box = el.appendChild(h(`<div class="sync-qr">
         <div class="qr" data-qr></div>
         <div class="stack" style="gap:8px;flex:1;min-width:220px">
           <b>На другом устройстве отсканируйте QR-код камерой</b>
-          <span class="muted" style="font-size:14px">или откройте на нём эту ссылку. Ссылка — ключ к вашему прогрессу, не публикуйте её.</span>
+          <span class="muted" style="font-size:14px">или откройте на нём эту ссылку. Ссылка — ключ к вашему прогрессу: сохраните её (например, в заметках или менеджере паролей), по ней прогресс восстановится на новом устройстве. Не публикуйте её.</span>
           <input readonly data-sync-link>
           <div class="row"><button class="btn small" data-sync-copy>Скопировать ссылку</button><button class="btn small" data-sync-hide>Скрыть</button></div>
         </div></div>`));
@@ -1413,11 +1431,17 @@
       });
       $("[data-sync-hide]", box).addEventListener("click", () => { SY.showQR = false; route(); });
     }
-    p("Синхронизация идёт, пока сайт открыт на обоих устройствах. Сброс прогресса действует только на этом устройстве: связанные устройства вернут свои данные.");
-    const row = el.appendChild(h(`<div class="row">${SY.showQR ? "" : `<button class="btn" data-sync-show>Добавить устройство (QR)</button>`}<span class="spacer"></span><button class="btn bad" data-sync-off>Отвязать это устройство</button></div>`));
+    p("Когда сайт открыт на двух устройствах сразу, изменения идут напрямую за секунду. В остальное время устройства обмениваются через зашифрованную копию на сервере. Сброс прогресса действует только на этом устройстве: копия и другие устройства вернут данные.");
+    const row = el.appendChild(h(`<div class="row">${SY.showQR ? "" : `<button class="btn" data-sync-show>Добавить устройство / ключ (QR)</button>`}<span class="spacer"></span><button class="btn" data-sync-off>Отвязать это устройство</button><button class="btn bad" data-sync-wipe>Удалить копию с сервера</button></div>`));
     const show = $("[data-sync-show]", row);
     if (show) show.addEventListener("click", () => { SY.showQR = true; route(); });
-    $("[data-sync-off]", row).addEventListener("click", () => { unpair(); toast("Синхронизация выключена"); route(); });
+    $("[data-sync-off]", row).addEventListener("click", () => { unpair(); toast("Синхронизация выключена. Копия на сервере осталась для других устройств"); route(); });
+    let wipeArmed = false;
+    $("[data-sync-wipe]", row).addEventListener("click", async (e) => {
+      if (!wipeArmed) { wipeArmed = true; e.target.textContent = "Удалить копию для всех устройств? Нажмите ещё раз"; setTimeout(() => { wipeArmed = false; e.target.textContent = "Удалить копию с сервера"; }, 4000); return; }
+      try { await CLOUD.wipe(); unpair(); toast("Копия удалена с сервера, синхронизация выключена"); route(); }
+      catch (err) { toast("Не удалось удалить: сервер недоступен"); }
+    });
     setTimeout(paintSyncStatus);
     return el;
   }

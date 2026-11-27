@@ -1,6 +1,12 @@
-// greek-signaling is a WebRTC signaling server for syncing progress between devices
-// of the greek-study site. The protocol is compatible with y-webrtc. The server only relays
-// service messages between devices in the same room; it stores nothing and logs no rooms or IPs.
+// greek-signaling is the server for the greek-study site. It does two things:
+//
+//  1. WebRTC signaling (path /, WebSocket, y-webrtc protocol): introduces devices so they
+//     can sync progress directly. It stores nothing.
+//  2. Encrypted progress copies (path /v1/blob/, SQLite): devices store their progress
+//     encrypted, so they can sync without being online at the same time. The server
+//     cannot read the data.
+//
+// No rooms, ids or IPs are written to the logs.
 //
 // Local run (no HTTPS):        greek-signaling -addr :4444
 // On a server (Let's Encrypt): greek-signaling -domain 1-2-3-4.sslip.io
@@ -35,14 +41,26 @@ func main() {
 		domain  = flag.String("domain", "", "domain for HTTPS via Let's Encrypt; enables ports 80 and 443")
 		cache   = flag.String("cache", filepath.Join(stateDir, "certs"), "certificate directory")
 		origins = flag.String("origins", "https://astretartem.github.io", "allowed site origins, comma-separated (localhost is always allowed)")
+		dbPath  = flag.String("db", filepath.Join(stateDir, "data.db"), "SQLite database of encrypted progress copies")
+		maxBlob = flag.Int("max-blobs", 100000, "maximum number of stored copies")
+		keep    = flag.Int("keep-days", 365, "delete copies not updated for this many days")
 	)
 	flag.Parse()
 
-	h := newHub(originChecker(*origins))
+	allow := originChecker(*origins)
+	st, err := openStore(*dbPath, *maxBlob)
+	if err != nil {
+		log.Fatalf("db: %v", err)
+	}
+	defer st.Close()
+
+	h := newHub(allow)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.Handle("/v1/blob/", &blobAPI{st: st, allow: allow, lim: newLimiter(ratePerMin, rateBurst)})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		conns, rooms := h.stats()
-		fmt.Fprintf(w, "ok conns=%d rooms=%d\n", conns, rooms)
+		blobs, _ := st.count(r.Context())
+		fmt.Fprintf(w, "ok conns=%d rooms=%d blobs=%d\n", conns, rooms, blobs)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if websocketRequested(r) {
@@ -61,6 +79,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go maintenance(ctx, st, filepath.Join(filepath.Dir(*dbPath), "backups"), time.Duration(*keep)*24*time.Hour)
 
 	errc := make(chan error, 2)
 	if *domain == "" {
@@ -119,5 +138,30 @@ func originChecker(list string) func(string) bool {
 		}
 		host := u.Hostname()
 		return host == "localhost" || host == "127.0.0.1" || host == "::1"
+	}
+}
+
+// maintenance runs once a day: deletes stale copies and takes a DB backup (keeping 7).
+func maintenance(ctx context.Context, st *store, backupDir string, maxAge time.Duration) {
+	run := func() {
+		if n, err := st.prune(ctx, maxAge); err != nil {
+			log.Printf("prune: %v", err)
+		} else if n > 0 {
+			log.Printf("prune: removed %d stale copies", n)
+		}
+		if err := st.backup(ctx, backupDir, 7); err != nil {
+			log.Printf("backup: %v", err)
+		}
+	}
+	run()
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			run()
+		}
 	}
 }
