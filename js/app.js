@@ -20,18 +20,35 @@
   const S = Object.assign({ level: "A2", strict: true, latin: true, autoSpeak: false, rate: 0.9, newPerSession: 20 }, store.get("gr.settings", {}));
   const UI = Object.assign({ deck: "all", topic: "", dir: "gr-ru", mode: "srs", spellTab: "dictation", spellDeck: "all", verbTab: "trainer", tenses: null, group: "all", examOnly: false }, store.get("gr.ui", {}));
   let P = store.get("gr.progress", {});
-  let LOG = store.get("gr.log", {});
+  // Счётчики ответов хранятся отдельно для каждого устройства и при синхронизации складываются,
+  // поэтому ответы, данные на двух устройствах в один день, не теряются.
+  const DEV = store.get("gr.device", null) || (() => { const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36); store.set("gr.device", id); return id; })();
+  let LOGS = store.get("gr.logs", null) || { [DEV]: store.get("gr.log", {}) };
+  const sumLogs = (L) => {
+    const out = {};
+    Object.values(L).forEach((days) => Object.entries(days || {}).forEach(([day, e]) => {
+      const o = out[day] || (out[day] = { n: 0, ok: 0 });
+      Object.entries(e).forEach(([k, v]) => { if (typeof v === "number") o[k] = (o[k] || 0) + v; });
+    }));
+    return out;
+  };
+  let LOG = sumLogs(LOGS);
   const saveS = () => store.set("gr.settings", S);
   const saveUI = () => store.set("gr.ui", UI);
   const saveP = () => store.set("gr.progress", P);
-  const saveLog = () => store.set("gr.log", LOG);
+  const saveLog = () => { LOG = sumLogs(LOGS); store.set("gr.logs", LOGS); };
+
+  let SYNC = null; // активная синхронизация (js/sync.js)
+  const syncSend = (obj) => { if (SYNC) SYNC.broadcast(obj); };
 
   function logAnswer(ok, kind) {
     const t = dayKey();
-    const e = LOG[t] || (LOG[t] = { n: 0, ok: 0 });
+    const mine = LOGS[DEV] || (LOGS[DEV] = {});
+    const e = mine[t] || (mine[t] = { n: 0, ok: 0 });
     e.n++; if (ok) e.ok++;
     e[kind] = (e[kind] || 0) + 1;
     saveLog();
+    syncSend({ t: "delta", logs: { [DEV]: { [t]: e } } });
   }
 
   const lvlOk = (l) => S.level === "B1" || l !== "B1";
@@ -162,6 +179,7 @@
     else { p.b = Math.min(6, Math.max(2, p.b + 1)); p.due = now + INT[p.b] * DAY; p.r++; }
     p.last = now;
     P[id] = p; saveP();
+    syncSend({ t: "delta", P: { [id]: p } });
   }
   const isDue = (it) => P[it.id] && P[it.id].due <= Date.now();
 
@@ -1262,6 +1280,148 @@
     });
   };
 
+  /* ================= Синхронизация устройств ================= */
+  // Объединение без потерь: по карточке побеждает более свежее повторение (поле last),
+  // счётчики ответов по каждому устройству и дню только растут, поэтому берётся больший.
+  const isCard = (p) => p && typeof p === "object" && typeof p.b === "number" && typeof p.due === "number";
+  function mergeRemote(data) {
+    let changed = false;
+    if (data.P && typeof data.P === "object") {
+      Object.entries(data.P).forEach(([id, rp]) => {
+        if (!isCard(rp)) return;
+        const lp = P[id];
+        if (!lp || (rp.last || 0) > (lp.last || 0)) { P[id] = rp; changed = true; }
+      });
+    }
+    if (data.logs && typeof data.logs === "object") {
+      Object.entries(data.logs).forEach(([dev, days]) => {
+        if (!days || typeof days !== "object") return;
+        const mine = LOGS[dev] || (LOGS[dev] = {});
+        Object.entries(days).forEach(([day, e]) => {
+          if (!e || typeof e.n !== "number" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+          if (!mine[day] || e.n > mine[day].n) { mine[day] = e; changed = true; }
+        });
+      });
+    }
+    return changed;
+  }
+
+  const SY = { cfg: store.get("gr.sync", null), status: "off", peers: 0, last: 0, pending: null, showQR: false };
+  const SYNC_TEXT = {
+    off: "Не связано",
+    connecting: "Подключаюсь…",
+    waiting: "Жду другое устройство: откройте сайт на нём",
+    connected: "Связано",
+    offline: "Нет связи с сервером, повторю попытку…",
+    nodirect: "Не удалось соединиться напрямую. Чаще всего помогает, если оба устройства в одной Wi-Fi-сети",
+  };
+  function syncStatusText() {
+    let t = SYNC_TEXT[SY.status] || SY.status;
+    if (SY.status === "connected") t += SY.peers > 1 ? ` с ${SY.peers} устройствами` : " с другим устройством";
+    if (SY.last) { const d = new Date(SY.last); t += ` · синхронизировано в ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+    return t;
+  }
+  function paintSyncStatus() {
+    $$("[data-sync-status]").forEach((el) => { el.textContent = syncStatusText(); el.dataset.state = SY.status; });
+  }
+  function startSync() {
+    if (SYNC) SYNC.close();
+    if (!SY.cfg || !window.GSync || !GSync.supported()) return;
+    SYNC = GSync.start({
+      secret: SY.cfg.secret,
+      getState: () => ({ P, logs: LOGS }),
+      onData: (m) => {
+        if (m.t !== "state" && m.t !== "delta") return;
+        SY.last = Date.now();
+        if (mergeRemote(m)) {
+          saveP(); saveLog();
+          if (m.t === "state") toast("Прогресс синхронизирован");
+          const view = (location.hash.slice(1) || "home").split("/")[0];
+          if (view === "home" || view === "stats") route();
+        }
+        paintSyncStatus();
+      },
+      onStatus: (s, n) => { SY.status = s; SY.peers = n; paintSyncStatus(); },
+    });
+  }
+  function pairWith(secret) {
+    SY.cfg = { secret, since: Date.now() };
+    store.set("gr.sync", SY.cfg);
+    startSync();
+  }
+  function unpair() {
+    if (SYNC) SYNC.close();
+    SYNC = null; SY.cfg = null; SY.status = "off"; SY.showQR = false; SY.last = 0;
+    store.set("gr.sync", null);
+  }
+  const syncLink = () => location.origin + location.pathname + "#sync=" + SY.cfg.secret;
+  function loadQR() {
+    if (window.qrcode) return Promise.resolve();
+    return new Promise((ok, fail) => {
+      const s = document.createElement("script");
+      s.src = "js/vendor/qrcode.js"; s.onload = ok; s.onerror = fail;
+      document.head.appendChild(s);
+    });
+  }
+  // Ссылка из QR-кода: #sync=<секрет>. Секрет сразу убирается из адресной строки.
+  (function takeSyncLink() {
+    const m = location.hash.match(/^#sync=([A-Za-z0-9_-]{16,64})$/);
+    if (!m) return;
+    history.replaceState(null, "", location.pathname + location.search + "#stats");
+    if (SY.cfg && SY.cfg.secret === m[1]) return;
+    SY.pending = m[1];
+  })();
+
+  function syncCard() {
+    const el = h(`<div class="card sync-card"><h2>🔄 Синхронизация устройств</h2></div>`);
+    const p = (html) => el.appendChild(h(`<p class="muted" style="margin-top:0;font-size:14px">${html}</p>`));
+    if (!window.GSync || !GSync.supported()) {
+      p("Этот браузер не поддерживает прямое соединение между устройствами. Перенесите прогресс через «Скопировать прогресс» ниже.");
+      return el;
+    }
+    if (SY.pending) {
+      p("Связать это устройство с другим? Прогресс двух устройств объединится: по каждой карточке останется самое свежее повторение, ответы сложатся.");
+      const row = el.appendChild(h(`<div class="row"><button class="btn primary" data-sync-accept>Связать</button><button class="btn" data-sync-cancel>Отмена</button></div>`));
+      $("[data-sync-accept]", row).addEventListener("click", () => { const s = SY.pending; SY.pending = null; pairWith(s); toast("Устройство связано"); route(); });
+      $("[data-sync-cancel]", row).addEventListener("click", () => { SY.pending = null; route(); });
+      return el;
+    }
+    if (!SY.cfg) {
+      p("Свяжите телефон и компьютер, и прогресс будет объединяться напрямую между ними, когда сайт открыт на обоих. Прогресс не хранится ни на каком сервере.");
+      const row = el.appendChild(h(`<div class="row"><button class="btn primary" data-sync-new>Связать устройства</button></div>`));
+      $("[data-sync-new]", row).addEventListener("click", () => { pairWith(GSync.newSecret()); SY.showQR = true; route(); });
+      return el;
+    }
+    el.appendChild(h(`<p class="sync-status" data-sync-status></p>`));
+    if (SY.showQR) {
+      const box = el.appendChild(h(`<div class="sync-qr">
+        <div class="qr" data-qr></div>
+        <div class="stack" style="gap:8px;flex:1;min-width:220px">
+          <b>На другом устройстве отсканируйте QR-код камерой</b>
+          <span class="muted" style="font-size:14px">или откройте на нём эту ссылку. Ссылка — ключ к вашему прогрессу, не публикуйте её.</span>
+          <input readonly data-sync-link>
+          <div class="row"><button class="btn small" data-sync-copy>Скопировать ссылку</button><button class="btn small" data-sync-hide>Скрыть</button></div>
+        </div></div>`));
+      $("[data-sync-link]", box).value = syncLink();
+      loadQR().then(() => {
+        const qr = qrcode(0, "M"); qr.addData(syncLink()); qr.make();
+        $("[data-qr]", box).innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+      }).catch(() => { $("[data-qr]", box).textContent = "QR-код не загрузился, используйте ссылку"; });
+      $("[data-sync-copy]", box).addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(syncLink()); toast("Ссылка скопирована"); }
+        catch (e) { $("[data-sync-link]", box).select(); toast("Скопируйте ссылку вручную"); }
+      });
+      $("[data-sync-hide]", box).addEventListener("click", () => { SY.showQR = false; route(); });
+    }
+    p("Синхронизация идёт, пока сайт открыт на обоих устройствах. Сброс прогресса действует только на этом устройстве: связанные устройства вернут свои данные.");
+    const row = el.appendChild(h(`<div class="row">${SY.showQR ? "" : `<button class="btn" data-sync-show>Добавить устройство (QR)</button>`}<span class="spacer"></span><button class="btn bad" data-sync-off>Отвязать это устройство</button></div>`));
+    const show = $("[data-sync-show]", row);
+    if (show) show.addEventListener("click", () => { SY.showQR = true; route(); });
+    $("[data-sync-off]", row).addEventListener("click", () => { unpair(); toast("Синхронизация выключена"); route(); });
+    setTimeout(paintSyncStatus);
+    return el;
+  }
+
   /* ================= Прогресс ================= */
   views.stats = (root) => {
     const all = items();
@@ -1294,7 +1454,7 @@
       <div class="card"><h2>По наборам</h2>
         <table class="ref"><tr><th>Набор</th><th>Всего</th><th>В работе</th><th>Выучено</th><th>К повторению</th></tr>${rows}</table></div>
       <div class="card"><h2>Данные</h2>
-        <p class="muted" style="margin-top:0;font-size:14px">Прогресс хранится только в этом браузере (localStorage). Сохраните копию, чтобы перенести его.</p>
+        <p class="muted" style="margin-top:0;font-size:14px">Прогресс хранится в этом браузере (localStorage). Можно сохранить копию в файл или перенести текстом.</p>
         <div class="row"><button class="btn" data-export>Скопировать прогресс</button>
           <button class="btn" data-file>Скачать файл</button>
           <label class="btn">Загрузить файл<input type="file" accept="application/json,.json" hidden data-import></label>
@@ -1302,13 +1462,17 @@
         <textarea data-json rows="4" placeholder="Сюда можно вставить скопированный прогресс с другого устройства" style="width:100%;margin-top:12px;font:13px ui-monospace,monospace;padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--surface-2);color:var(--text)"></textarea>
         <div class="row" style="margin-top:8px"><button class="btn small" data-paste>Загрузить из текста</button></div></div>
     </div>`);
-    const dump = () => JSON.stringify({ progress: P, log: LOG, settings: S });
+    const sc = syncCard();
+    if (SY.pending) el.insertBefore(sc, el.children[1]); else el.insertBefore(sc, el.lastElementChild);
+    const dump = () => JSON.stringify({ progress: P, logs: LOGS, log: LOG, settings: S });
     function applyData(text) {
       try {
         const data = JSON.parse(text);
-        if (!data.progress && !data.log) throw new Error("empty");
+        if (!data.progress && !data.log && !data.logs) throw new Error("empty");
         if (data.progress) { P = data.progress; saveP(); }
-        if (data.log) { LOG = data.log; saveLog(); }
+        if (data.logs) { LOGS = data.logs; saveLog(); }
+        else if (data.log) { LOGS = { [DEV]: data.log }; saveLog(); }
+        syncSend(Object.assign({ t: "state", v: 1 }, { P, logs: LOGS }));
         toast("Прогресс загружен"); route();
       } catch (err) { toast("Не удалось прочитать данные"); }
     }
@@ -1333,10 +1497,11 @@
     let armed = false;
     $("[data-reset]", el).addEventListener("click", (e) => {
       if (!armed) { armed = true; e.target.textContent = "Точно удалить всё? Нажмите ещё раз"; setTimeout(() => { armed = false; e.target.textContent = "Сбросить прогресс"; }, 4000); return; }
-      P = {}; LOG = {}; saveP(); saveLog(); toast("Прогресс сброшен"); route();
+      P = {}; LOGS = {}; saveP(); saveLog(); toast("Прогресс сброшен"); route();
     });
     root.appendChild(el);
   };
 
+  startSync();
   route();
 })();

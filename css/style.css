@@ -279,3 +279,14 @@ button.w:hover, button.w:focus-visible { background: var(--blue-soft); color: va
 
 .site-foot { text-align: center; font-size: 13px; color: var(--muted, #6b7280); padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); line-height: 1.6; }
 .site-foot a { color: inherit; text-decoration: underline; }
+
+/* Синхронизация устройств */
+.sync-status { margin: 0 0 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.sync-status::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.sync-status[data-state="connected"]::before { background: #12b76a; }
+.sync-status[data-state="waiting"]::before, .sync-status[data-state="connecting"]::before { background: #f79009; }
+.sync-status[data-state="nodirect"]::before, .sync-status[data-state="offline"]::before { background: #f04438; }
+.sync-qr { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 12px; }
+.sync-qr .qr { width: 180px; height: 180px; background: #fff; border-radius: 12px; padding: 6px; flex: none; }
+.sync-qr .qr svg { width: 100%; height: 100%; display: block; }
+.sync-qr input { width: 100%; font: 13px ui-monospace, monospace; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
